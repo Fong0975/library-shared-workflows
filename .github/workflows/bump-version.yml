@@ -189,7 +189,7 @@ jobs:
           BODY: ${{ steps.body.outputs.value }}
           BRANCH: ${{ inputs.default-branch }}
         run: |
-          git commit -a -m "chore: bump version to v${NEW} [skip ci]" -m "$BODY"
+          git commit -a -m "chore: Bump version to v${NEW} [skip ci]" -m "$BODY"
           git pull --rebase origin "$BRANCH"
           git push origin "HEAD:${BRANCH}"
           git tag "v${NEW}"

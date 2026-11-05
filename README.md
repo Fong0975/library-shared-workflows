@@ -166,7 +166,7 @@ and pushes `docs: regenerate swagger documentation [skip ci]` when it changed.
 
 Reads the version from `version-file` (or the first `npm-dirs` `package.json`), increments
 it, writes it to every configured location, then pushes
-`chore: bump version to vX.Y.Z [skip ci]` (body: the pushed commit titles, or the manual
+`chore: Bump version to vX.Y.Z [skip ci]` (body: the pushed commit titles, or the manual
 notes) and the tag `vX.Y.Z`. `[skip ci]` prevents the commit from triggering CI again.
 
 For manual bumps, call `bump-version.yml` from a `workflow_dispatch` workflow
