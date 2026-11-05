@@ -25,7 +25,7 @@ runs:
         REF: ${{ inputs.ref }}
       run: |
         if [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ]; then
-          echo "::error::The APP_ID and APP_PRIVATE_KEY secrets are required to push to ${REF}; pass them to the workflow (e.g. secrets: inherit)."
+          echo "::error::The APP_ID and APP_PRIVATE_KEY secrets are required to push to ${REF}; map both of them explicitly under the calling job's secrets: block."
           exit 1
         fi
 

@@ -25,7 +25,11 @@ jobs:
       pull-requests: write
       pages: write
       id-token: write
-    secrets: inherit # APP_ID / APP_PRIVATE_KEY (pushes), GITLEAKS_LICENSE (organizations only)
+    # Pass only the secrets the pipeline needs instead of `secrets: inherit`.
+    secrets:
+      APP_ID: ${{ secrets.APP_ID }} # Pushes of the version bump / swagger commit
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+      # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} # Only for GitHub Organization repositories
     with:
       projects: |
         [

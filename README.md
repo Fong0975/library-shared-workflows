@@ -32,7 +32,9 @@ jobs:
       pull-requests: write
       pages: write
       id-token: write
-    secrets: inherit
+    secrets:
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
     with:
       projects: |
         [{ "name": "app", "language": "node" }]
@@ -43,7 +45,9 @@ jobs:
 - **Permissions** – the calling job must grant `contents: read`, `pull-requests: write`,
   `pages: write` and `id-token: write`. GitHub validates the permissions of every nested
   job when the run starts, even for stages that are disabled, so all four are always needed.
-- **Secrets** – pass them with `secrets: inherit`.
+- **Secrets** – pass each one explicitly under `secrets:` rather than with `secrets: inherit`,
+  which hands every repository secret to the reusable workflow (Semgrep's `p/security-audit`
+  also flags it as blocking).
   - `APP_ID`, `APP_PRIVATE_KEY`: a GitHub App (client ID and private key) with
     `contents: write` that is allowed to bypass the default branch's protection. Required by
     `bump-version` and by `swagger-publish: commit|both`; there is no `GITHUB_TOKEN` fallback.
