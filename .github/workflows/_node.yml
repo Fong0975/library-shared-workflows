@@ -1,0 +1,110 @@
+name: Node project
+
+# Runs the quality checks, unit tests and build of one Node project. Each job is
+# skipped when its commands are empty in the project definition.
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Normalized project JSON produced by _detect-changes.yml.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Lint & Format
+    if: >-
+      fromJSON(inputs.project).format != '' ||
+      fromJSON(inputs.project).lint != '' ||
+      fromJSON(inputs.project).typecheck != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ fromJSON(inputs.project).dir }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: Fong0975/library-shared-workflows/.github/actions/setup-node-project@v1
+        with:
+          project: ${{ inputs.project }}
+
+      - name: Check formatting
+        if: fromJSON(inputs.project).format != ''
+        env:
+          CMD: ${{ fromJSON(inputs.project).format }}
+        run: eval "$CMD"
+
+      - name: Lint
+        if: fromJSON(inputs.project).lint != ''
+        env:
+          CMD: ${{ fromJSON(inputs.project).lint }}
+        run: eval "$CMD"
+
+      - name: Type-check
+        if: fromJSON(inputs.project).typecheck != ''
+        env:
+          CMD: ${{ fromJSON(inputs.project).typecheck }}
+        run: eval "$CMD"
+
+  test:
+    name: Unit Tests
+    if: fromJSON(inputs.project).test != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    defaults:
+      run:
+        working-directory: ${{ fromJSON(inputs.project).dir }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: Fong0975/library-shared-workflows/.github/actions/setup-node-project@v1
+        with:
+          project: ${{ inputs.project }}
+
+      - name: Run unit tests
+        id: test
+        env:
+          CMD: ${{ fromJSON(inputs.project).test }}
+        run: eval "$CMD"
+
+      - name: Report test results
+        if: always() && steps.test.outcome != 'skipped'
+        uses: Fong0975/library-shared-workflows/.github/actions/test-report@v1
+        with:
+          language: node
+          name: ${{ fromJSON(inputs.project).name }}
+          working-directory: ${{ fromJSON(inputs.project).dir }}
+          results-file: ${{ fromJSON(inputs.project)['test-results'] }}
+          coverage-file: ${{ fromJSON(inputs.project)['coverage-file'] }}
+          coverage-threshold: ${{ fromJSON(inputs.project)['coverage-threshold'] }}
+
+  build:
+    name: Build
+    if: fromJSON(inputs.project).build != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ fromJSON(inputs.project).dir }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: Fong0975/library-shared-workflows/.github/actions/setup-node-project@v1
+        with:
+          project: ${{ inputs.project }}
+
+      - name: Build
+        env:
+          CMD: ${{ fromJSON(inputs.project).build }}
+        run: eval "$CMD"

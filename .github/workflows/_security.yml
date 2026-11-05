@@ -1,0 +1,67 @@
+name: Security scan
+
+# SAST with Semgrep and secret detection with Gitleaks, as two parallel jobs.
+# On pull requests Semgrep only fails on findings the PR introduces; every other
+# event (push, schedule, manual run) scans the whole repository.
+
+on:
+  workflow_call:
+    inputs:
+      semgrep-configs:
+        description: Space-separated Semgrep configs (e.g. "p/security-audit p/golang"); empty skips Semgrep.
+        type: string
+        required: true
+    secrets:
+      GITLEAKS_LICENSE:
+        description: Only required when the repository belongs to a GitHub Organization.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: SAST (Semgrep)
+    if: inputs.semgrep-configs != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # The PR baseline diff needs the base commit
+          persist-credentials: false
+
+      - name: Install Semgrep
+        run: pipx install semgrep
+
+      - name: Run Semgrep
+        env:
+          CONFIGS: ${{ inputs.semgrep-configs }}
+          BASELINE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          read -ra configs <<<"$CONFIGS"
+          args=(scan --error)
+          for config in "${configs[@]}"; do
+            args+=("--config=${config}")
+          done
+          if [ -n "$BASELINE" ]; then
+            args+=("--baseline-commit=${BASELINE}")
+          fi
+          semgrep "${args[@]}"
+
+  gitleaks:
+    name: Secret scan (Gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # Gitleaks scans the commit history
+          persist-credentials: false
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}

@@ -1,0 +1,33 @@
+name: Set up Node project
+description: >-
+  Exports the project's environment variables, installs the Node.js toolchain
+  and installs the project's dependencies.
+
+inputs:
+  project:
+    description: Normalized project JSON produced by _detect-changes.yml.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Export project environment
+      shell: bash
+      env:
+        PROJECT_JSON: ${{ inputs.project }}
+      run: bash "$GITHUB_ACTION_PATH/../_lib/export-env.sh"
+
+    - name: Set up Node.js
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: ${{ fromJSON(inputs.project)['node-version-file'] }}
+        cache: ${{ fromJSON(inputs.project).cache }}
+        cache-dependency-path: ${{ fromJSON(inputs.project)['cache-dependency-path'] }}
+
+    - name: Install dependencies
+      if: fromJSON(inputs.project).install != ''
+      shell: bash
+      working-directory: ${{ fromJSON(inputs.project).dir }}
+      env:
+        CMD: ${{ fromJSON(inputs.project).install }}
+      run: eval "$CMD"

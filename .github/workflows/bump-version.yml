@@ -1,0 +1,191 @@
+name: Bump Version
+
+# Bumps the semantic version, commits it to the default branch and tags it.
+# ci.yml calls this after a successful push to the default branch; callers can
+# also call it directly from their own workflow_dispatch workflow for manual bumps
+# (see templates/bump-version.caller.yml).
+#
+# The version is read from `version-file` when set, otherwise from the
+# package.json of the first `npm-dirs` entry, and is then written to every
+# configured location.
+
+on:
+  workflow_call:
+    inputs:
+      bump-level:
+        description: Part of the version to increment (patch | minor | major).
+        type: string
+        default: patch
+      notes:
+        description: Optional release notes appended to the commit body (manual runs).
+        type: string
+        default: ""
+      version-file:
+        description: Plain-text file holding only the version (e.g. VERSION); empty when package.json is the source.
+        type: string
+        default: ""
+      npm-dirs:
+        description: JSON array of directories whose package.json (and lockfile) receive the version.
+        type: string
+        default: '["."]'
+      npm-workspaces:
+        description: JSON array of npm workspaces, relative to the first npm-dirs entry, that receive the version.
+        type: string
+        default: "[]"
+      node-version-file:
+        description: Node version file; defaults to .nvmrc in the first npm-dirs entry.
+        type: string
+        default: ""
+      default-branch:
+        description: Branch the version commit is pushed to.
+        type: string
+        default: main
+    outputs:
+      new-version:
+        description: The version that was committed and tagged (without the "v" prefix).
+        value: ${{ jobs.bump.outputs.new-version }}
+    secrets:
+      APP_ID:
+        description: GitHub App client ID used to push through branch protection.
+        required: true
+      APP_PRIVATE_KEY:
+        description: GitHub App private key used to push through branch protection.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    name: Bump version
+    runs-on: ubuntu-latest
+    # Bumps run one at a time, in order, and are never cancelled half-way.
+    concurrency:
+      group: bump-version-${{ github.repository }}
+      cancel-in-progress: false
+    outputs:
+      new-version: ${{ steps.version.outputs.new_version }}
+    steps:
+      - name: Resolve settings
+        id: settings
+        env:
+          BUMP_LEVEL: ${{ inputs.bump-level }}
+          VERSION_FILE: ${{ inputs.version-file }}
+          NPM_DIRS: ${{ inputs.npm-dirs }}
+          NODE_VERSION_FILE: ${{ inputs.node-version-file }}
+        run: |
+          case "$BUMP_LEVEL" in patch | minor | major) ;; *)
+            echo "::error::Unsupported bump level \"${BUMP_LEVEL}\" (expected patch, minor or major)"
+            exit 1 ;;
+          esac
+
+          npm_root=$(jq -r '.[0] // ""' <<<"$NPM_DIRS")
+          if [ -z "$VERSION_FILE" ] && [ -z "$npm_root" ]; then
+            echo "::error::Set version-file or at least one npm-dirs entry"
+            exit 1
+          fi
+
+          node_version_file="$NODE_VERSION_FILE"
+          if [ -z "$node_version_file" ] && [ -n "$npm_root" ]; then
+            node_version_file="${npm_root%/}/.nvmrc"
+          fi
+
+          {
+            echo "npm-root=${npm_root}"
+            echo "node-version-file=${node_version_file}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: Fong0975/library-shared-workflows/.github/actions/checkout-for-push@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          ref: ${{ inputs.default-branch }}
+
+      # `npm version` only rewrites package.json and its lockfile; it needs no
+      # installed dependencies, hence no cache or install step.
+      - name: Set up Node.js
+        if: steps.settings.outputs.npm-root != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ${{ steps.settings.outputs.node-version-file }}
+
+      - name: Bump version
+        id: version
+        env:
+          BUMP_LEVEL: ${{ inputs.bump-level }}
+          VERSION_FILE: ${{ inputs.version-file }}
+          NPM_DIRS: ${{ inputs.npm-dirs }}
+          NPM_WORKSPACES: ${{ inputs.npm-workspaces }}
+          NPM_ROOT: ${{ steps.settings.outputs.npm-root }}
+        run: |
+          if [ -n "$VERSION_FILE" ]; then
+            old_version=$(tr -d '[:space:]' < "$VERSION_FILE")
+          else
+            old_version=$(jq -r '.version' "${NPM_ROOT}/package.json")
+          fi
+          if ! [[ "$old_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Current version \"${old_version}\" is not a plain MAJOR.MINOR.PATCH version"
+            exit 1
+          fi
+
+          IFS='.' read -r major minor patch <<<"$old_version"
+          case "$BUMP_LEVEL" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          new_version="${major}.${minor}.${patch}"
+
+          if [ -n "$VERSION_FILE" ]; then
+            echo "$new_version" > "$VERSION_FILE"
+          fi
+          while IFS= read -r dir; do
+            (cd "$dir" && npm version "$new_version" --no-git-tag-version --allow-same-version)
+          done < <(jq -r '.[]' <<<"$NPM_DIRS")
+          while IFS= read -r workspace; do
+            (cd "$NPM_ROOT" && npm version "$new_version" --no-git-tag-version --allow-same-version -w "$workspace")
+          done < <(jq -r '.[]' <<<"$NPM_WORKSPACES")
+
+          {
+            echo "old_version=${old_version}"
+            echo "new_version=${new_version}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build commit body
+        id: body
+        env:
+          EVENT: ${{ github.event_name }}
+          COMMITS_JSON: ${{ toJSON(github.event.commits) }}
+          NOTES: ${{ inputs.notes }}
+          OLD: ${{ steps.version.outputs.old_version }}
+          NEW: ${{ steps.version.outputs.new_version }}
+        run: |
+          body="- ${OLD} → ${NEW}"
+          if [ "$EVENT" = "push" ]; then
+            extra=$(jq -r '(. // [])[] | .message | split("\n")[0]' <<<"$COMMITS_JSON" | sed 's/^/- /')
+          else
+            extra="$NOTES"
+          fi
+          if [ -n "$extra" ]; then
+            body="${body}"$'\n'"${extra}"
+          fi
+          delimiter="BODY_EOF_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            echo "value<<${delimiter}"
+            echo "$body"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+      # "[skip ci]" keeps this commit from starting the push workflows again, so
+      # the bump cannot loop.
+      - name: Commit, push and tag
+        env:
+          NEW: ${{ steps.version.outputs.new_version }}
+          BODY: ${{ steps.body.outputs.value }}
+          BRANCH: ${{ inputs.default-branch }}
+        run: |
+          git commit -a -m "chore: bump version to v${NEW} [skip ci]" -m "$BODY"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:${BRANCH}"
+          git tag "v${NEW}"
+          git push origin "v${NEW}"

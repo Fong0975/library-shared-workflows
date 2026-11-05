@@ -1,0 +1,210 @@
+name: Detect changes
+
+# Normalizes the caller's `projects` list (fills in per-language defaults) and
+# decides which projects and optional stages are affected by the changed paths.
+# Filtering happens here rather than in the caller's `on.*.paths` so that
+# unaffected checks report as "skipped" (which satisfies required status checks)
+# instead of never starting.
+#
+# - pull_request: projects and extra filters follow the PR's changed paths; a PR
+#   that edits a workflow file selects everything.
+# - push: every project is checked, while extra filters (post-merge stages such
+#   as swagger and the version bump) follow the pushed commits.
+# - any other event (e.g. workflow_dispatch): everything is selected.
+
+on:
+  workflow_call:
+    inputs:
+      projects:
+        description: JSON array of project definitions (see README).
+        type: string
+        required: true
+      ignore-paths:
+        description: JSON array of glob patterns that never trigger any check.
+        type: string
+        required: true
+      extra-filters:
+        description: >-
+          JSON object mapping a filter name to its glob patterns; each result is
+          exposed as a boolean in the `extra` output.
+        type: string
+        default: "{}"
+    outputs:
+      node-projects:
+        description: JSON array of normalized node projects to check.
+        value: ${{ jobs.detect.outputs.node-projects }}
+      go-projects:
+        description: JSON array of normalized go projects to check.
+        value: ${{ jobs.detect.outputs.go-projects }}
+      any:
+        description: '"true" when any non-ignored file changed.'
+        value: ${{ jobs.detect.outputs.any }}
+      extra:
+        description: JSON object mapping each extra filter name to true/false.
+        value: ${{ jobs.detect.outputs.extra }}
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      node-projects: ${{ steps.select.outputs.node-projects }}
+      go-projects: ${{ steps.select.outputs.go-projects }}
+      any: ${{ steps.select.outputs.any }}
+      extra: ${{ steps.select.outputs.extra }}
+    steps:
+      - name: Normalize projects
+        id: normalize
+        env:
+          PROJECTS: ${{ inputs.projects }}
+          IGNORE_PATHS: ${{ inputs.ignore-paths }}
+          EXTRA_FILTERS: ${{ inputs.extra-filters }}
+        run: |
+          projects=$(jq -c '
+            def under($dir; $file): if $dir == "." then $file else "\($dir)/\($file)" end;
+
+            def defaults($language; $dir):
+              if $language == "node" then {
+                install: "npm ci",
+                format: "npm run format:check",
+                lint: "npm run lint",
+                typecheck: "npm run typecheck",
+                test: "npm run test:coverage -- --reporter=default --reporter=json --outputFile.json=test-results.json",
+                build: "npm run build",
+                "node-version-file": under($dir; ".nvmrc"),
+                cache: "npm",
+                "cache-dependency-path": under($dir; "package-lock.json"),
+                "test-results": "test-results.json",
+                "coverage-file": "coverage/coverage-summary.json",
+                env: {}
+              }
+              elif $language == "go" then {
+                format: "",
+                lint: "",
+                typecheck: "",
+                "golangci-lint": "latest",
+                "golangci-lint-args": "--timeout=5m",
+                test: "go test ./... -v -race -coverprofile=coverage.out 2>&1 | tee test-output.txt",
+                build: "go build ./...",
+                "go-version-file": under($dir; "go.mod"),
+                "cache-dependency-path": under($dir; "go.sum"),
+                "test-results": "test-output.txt",
+                "coverage-file": "coverage.out",
+                env: { CGO_ENABLED: "1" }
+              }
+              else error("unsupported language \"\($language)\" (expected node or go)")
+              end
+              + { "coverage-threshold": 0, "coverage-exclude": "" };
+
+            if type != "array" or length == 0 then error("projects must be a non-empty JSON array") else . end
+            | map(
+                if (.name | type) != "string" or (.name | test("^[A-Za-z0-9_-]+$") | not)
+                then error("every project needs a name made of letters, digits, \"-\" or \"_\"")
+                else . end
+                | . as $p
+                | ($p.dir // "." | ltrimstr("./") | rtrimstr("/") | if . == "" then "." else . end) as $dir
+                | defaults($p.language; $dir) as $d
+                | $d + { paths: [under($dir; "**")] } + $p
+                | .dir = $dir
+                | .env = ($d.env + ($p.env // {}))
+                | .paths |= (if type == "string" then [.] else . end)
+              )
+            | if (map(.name) | unique | length) != length then error("project names must be unique") else . end
+          ' <<<"$PROJECTS")
+
+          # paths-filter treats every pattern of a filter as a required match
+          # (predicate-quantifier: every), so all include patterns are folded into
+          # one brace pattern and the exclusions follow as negated patterns.
+          filters=$(jq -c --argjson ignore "$IGNORE_PATHS" --argjson extra "$EXTRA_FILTERS" '
+            def rules($paths):
+              ($paths | map(select(startswith("!") | not))) as $include
+              | if ($include | length) == 0 then error("every filter needs at least one include pattern") else . end
+              | [ if ($include | length) == 1 then $include[0] else "{\($include | join(","))}" end ]
+                + ($paths | map(select(startswith("!"))))
+                + ($ignore | map("!\(.)"));
+
+            { ci: [".github/workflows/**"], any: rules(["**"]) }
+            + (map({ key: "project_\(.name)", value: rules(.paths) }) | from_entries)
+            + ($extra | with_entries(.key = "extra_\(.key)" | .value = rules(.value | if type == "string" then [.] else . end)))
+          ' <<<"$projects")
+
+          {
+            echo "projects=${projects}"
+            echo "filters=${filters}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Pull requests are diffed through the API; pushes are diffed in git.
+      - name: Checkout
+        if: github.event_name == 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Filter changed paths
+        id: filter
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          predicate-quantifier: every
+          filters: ${{ steps.normalize.outputs.filters }}
+
+      - name: Select what to run
+        id: select
+        env:
+          PROJECTS: ${{ steps.normalize.outputs.projects }}
+          EXTRA_FILTERS: ${{ inputs.extra-filters }}
+          CHANGES: ${{ steps.filter.outputs.changes || '[]' }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          has_change() {
+            jq -e --arg key "$1" 'any(.[]; . == $key)' <<<"$CHANGES" > /dev/null
+          }
+
+          # `all` selects every project; `extra_all` turns every extra filter on.
+          case "$EVENT" in
+            pull_request)
+              if has_change ci; then all=true; else all=false; fi
+              extra_all=$all ;;
+            push)
+              all=true
+              extra_all=false ;;
+            *)
+              all=true
+              extra_all=true ;;
+          esac
+
+          pick_projects() {
+            jq -c --arg lang "$1" --argjson all "$all" --argjson changes "$CHANGES" '
+              map(select(.language == $lang
+                and ($all or ("project_\(.name)" as $key | any($changes[]; . == $key)))))
+            ' <<<"$PROJECTS"
+          }
+
+          if [ "$all" = "true" ] || has_change any; then any=true; else any=false; fi
+
+          extra=$(jq -c --argjson all "$extra_all" --argjson changes "$CHANGES" '
+            with_entries(.key as $name | .value = ($all or any($changes[]; . == "extra_\($name)")))
+          ' <<<"$EXTRA_FILTERS")
+
+          {
+            echo "node-projects=$(pick_projects node)"
+            echo "go-projects=$(pick_projects go)"
+            echo "any=${any}"
+            echo "extra=${extra}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Detected changes"
+            echo ""
+            echo "- Run everything: \`${all}\`"
+            echo "- Node projects: \`$(pick_projects node | jq -c 'map(.name)')\`"
+            echo "- Go projects: \`$(pick_projects go | jq -c 'map(.name)')\`"
+            echo "- Extra filters: \`${extra}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

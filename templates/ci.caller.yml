@@ -1,0 +1,38 @@
+# Copy to .github/workflows/ci.yml in the consuming repository and adjust `with:`.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: # Manual full run
+
+# Cancel superseded runs of the same PR; never cancel runs on main.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  ci:
+    uses: Fong0975/library-shared-workflows/.github/workflows/ci.yml@v1
+    # Every scope below is required, even when a stage is disabled: GitHub checks
+    # the permissions of all nested jobs when the run starts.
+    permissions:
+      contents: read
+      pull-requests: write
+      pages: write
+      id-token: write
+    secrets: inherit # APP_ID / APP_PRIVATE_KEY (pushes), GITLEAKS_LICENSE (organizations only)
+    with:
+      projects: |
+        [
+          { "name": "app", "language": "node" }
+        ]
+      enable-security-scan: true
+      semgrep-configs: p/security-audit p/owasp-top-ten p/typescript
+      enable-swagger: false
+      enable-bump-version: true
+      bump-level: patch

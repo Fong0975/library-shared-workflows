@@ -1,0 +1,29 @@
+name: Set up Go project
+description: >-
+  Exports the project's environment variables, installs the Go toolchain
+  (with module and build caching) and downloads the module's dependencies.
+
+inputs:
+  project:
+    description: Normalized project JSON produced by _detect-changes.yml.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Export project environment
+      shell: bash
+      env:
+        PROJECT_JSON: ${{ inputs.project }}
+      run: bash "$GITHUB_ACTION_PATH/../_lib/export-env.sh"
+
+    - name: Set up Go
+      uses: actions/setup-go@v5 # TODO: pin to a commit SHA
+      with:
+        go-version-file: ${{ fromJSON(inputs.project)['go-version-file'] }}
+        cache-dependency-path: ${{ fromJSON(inputs.project)['cache-dependency-path'] }}
+
+    - name: Download dependencies
+      shell: bash
+      working-directory: ${{ fromJSON(inputs.project).dir }}
+      run: go mod download

@@ -1,0 +1,36 @@
+# Copy to .github/workflows/bump-version.yml in the consuming repository to bump
+# the version by hand. Keep the version settings in `with:` identical to the ones
+# passed to ci.yml.
+name: Bump Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: Version bump type
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      notes:
+        description: Optional release notes (appended to the commit body)
+        required: false
+        type: string
+
+permissions: {}
+
+jobs:
+  bump:
+    uses: Fong0975/library-shared-workflows/.github/workflows/bump-version.yml@v1
+    permissions:
+      contents: read
+    secrets: inherit # APP_ID / APP_PRIVATE_KEY
+    with:
+      bump-level: ${{ inputs.bump_type }}
+      notes: ${{ inputs.notes }}
+      # version-file: VERSION
+      # npm-dirs: '["."]'
+      # npm-workspaces: '[]'

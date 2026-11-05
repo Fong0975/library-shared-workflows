@@ -1,0 +1,77 @@
+name: Unit test report
+description: >-
+  Builds a Markdown unit-test and coverage report, publishes it to the job summary
+  and as a sticky pull-request comment, then enforces the coverage threshold.
+
+inputs:
+  language:
+    description: Project language (node or go); selects the report builder.
+    required: true
+  name:
+    description: Project name; used in the heading and as the sticky comment key.
+    required: true
+  working-directory:
+    description: Directory the result and coverage paths are relative to.
+    default: "."
+  results-file:
+    description: Test results file (Jest JSON for node, `go test -v` output for go).
+    required: true
+  coverage-file:
+    description: Coverage file (coverage-summary.json for node, cover profile for go).
+    required: true
+  coverage-threshold:
+    description: Minimum total coverage in percent; 0 disables enforcement.
+    default: "0"
+  coverage-exclude:
+    description: Extended regex of cover-profile lines to drop (go only).
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # Every step uses always(): this action runs after a failed test step, and
+    # composite steps otherwise inherit the job's failure state and skip.
+    - name: Build report
+      id: build
+      if: always()
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        LANGUAGE: ${{ inputs.language }}
+        TITLE: ${{ inputs.name }}
+        RESULTS_FILE: ${{ inputs.results-file }}
+        COVERAGE_FILE: ${{ inputs.coverage-file }}
+        COVERAGE_EXCLUDE: ${{ inputs.coverage-exclude }}
+        THRESHOLD: ${{ inputs.coverage-threshold }}
+        REPORT_FILE: ${{ runner.temp }}/test-report-${{ inputs.name }}.md
+      run: |
+        bash "$GITHUB_ACTION_PATH/../_lib/${LANGUAGE}-report.sh"
+        cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Comment report on PR
+      if: always() && github.event_name == 'pull_request' && steps.build.outcome == 'success'
+      uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+      with:
+        header: unit-test-report-${{ inputs.name }}
+        path: ${{ runner.temp }}/test-report-${{ inputs.name }}.md
+
+    - name: Enforce coverage threshold
+      if: always()
+      shell: bash
+      env:
+        NAME: ${{ inputs.name }}
+        COVERAGE: ${{ steps.build.outputs.coverage }}
+        THRESHOLD: ${{ inputs.coverage-threshold }}
+      run: |
+        if ! awk -v t="$THRESHOLD" 'BEGIN { exit !(t + 0 > 0) }'; then
+          exit 0
+        fi
+        if [ -z "$COVERAGE" ]; then
+          echo "::error::Coverage data for ${NAME} is missing; cannot verify the ${THRESHOLD}% threshold"
+          exit 1
+        fi
+        if awk -v c="$COVERAGE" -v t="$THRESHOLD" 'BEGIN { exit !(c < t) }'; then
+          echo "::error::${NAME} coverage ${COVERAGE}% is below the required ${THRESHOLD}% threshold"
+          exit 1
+        fi
+        echo "${NAME} coverage ${COVERAGE}% meets the ${THRESHOLD}% threshold"

@@ -1,0 +1,231 @@
+name: CI
+
+# Entry point for callers. Detects what changed, runs the quality checks, unit
+# tests and build of every affected project (dispatched by language) alongside the
+# optional security scan, then, on the default branch, optionally regenerates the
+# Swagger documentation and finally bumps the version.
+#
+# The caller must grant `contents: read`, `pull-requests: write`, `pages: write`
+# and `id-token: write`: GitHub validates the permissions of every nested job when
+# the run starts, even for jobs whose `if` turns them off.
+
+on:
+  workflow_call:
+    inputs:
+      projects:
+        description: >-
+          JSON array of projects to check. Each entry needs `name` and `language`
+          (node | go) and may override `dir`, `paths`, `env`, the commands and the
+          coverage settings (see README).
+        type: string
+        required: true
+      ignore-paths:
+        description: JSON array of glob patterns that never trigger any check.
+        type: string
+        default: >-
+          ["**/*.{png,jpg,jpeg,gif,webp,ico,svg}", "LICENSE", ".github/pull_request_template.md",
+          ".editorconfig", ".gitattributes", ".gitignore"]
+      default-branch:
+        description: Branch whose pushes run the post-merge stages.
+        type: string
+        default: main
+
+      enable-security-scan:
+        description: Run Semgrep (SAST) and Gitleaks (secret scan).
+        type: boolean
+        default: false
+      semgrep-configs:
+        description: Space-separated Semgrep configs; add language packs such as p/typescript or p/golang.
+        type: string
+        default: p/security-audit p/owasp-top-ten
+
+      enable-swagger:
+        description: Regenerate the Swagger documentation after the checks pass on the default branch.
+        type: boolean
+        default: false
+      swagger-language:
+        description: Toolchain used to generate the documentation (node | go).
+        type: string
+        default: go
+      swagger-dir:
+        description: Directory the swagger install and generate commands run in.
+        type: string
+        default: "."
+      swagger-install:
+        description: Optional command run before generating (e.g. "npm ci").
+        type: string
+        default: ""
+      swagger-command:
+        description: Command that generates the documentation; required when enable-swagger is true.
+        type: string
+        default: ""
+      swagger-output-dir:
+        description: Directory the command writes to, relative to swagger-dir.
+        type: string
+        default: docs
+      swagger-spec-file:
+        description: OpenAPI document Swagger UI loads, relative to swagger-output-dir.
+        type: string
+        default: swagger.json
+      swagger-publish:
+        description: Where the documentation goes (pages | commit | both).
+        type: string
+        default: pages
+      swagger-title:
+        description: GitHub Pages title; defaults to "<repository> API Documentation".
+        type: string
+        default: ""
+      swagger-paths:
+        description: JSON array of glob patterns; a push to the default branch regenerates only when one of them changed.
+        type: string
+        default: '["**", "!**/*.md", "!.github/**"]'
+
+      enable-bump-version:
+        description: Bump, commit and tag the version after a push to the default branch passes every check.
+        type: boolean
+        default: true
+      bump-level:
+        description: Part of the version the automatic bump increments (patch | minor).
+        type: string
+        default: patch
+      version-file:
+        description: Plain-text file holding only the version (e.g. VERSION); empty when package.json is the source.
+        type: string
+        default: ""
+      npm-dirs:
+        description: JSON array of directories whose package.json (and lockfile) receive the version; "[]" for none.
+        type: string
+        default: '["."]'
+      npm-workspaces:
+        description: JSON array of npm workspaces, relative to the first npm-dirs entry, that receive the version.
+        type: string
+        default: "[]"
+      node-version-file:
+        description: Node version file for the bump; defaults to .nvmrc in the first npm-dirs entry.
+        type: string
+        default: ""
+      bump-paths:
+        description: JSON array of glob patterns; a push bumps the version only when one of them changed.
+        type: string
+        default: '["**", "!**/*.md", "!.github/**"]'
+    secrets:
+      APP_ID:
+        description: GitHub App client ID used to push to the default branch.
+        required: false
+      APP_PRIVATE_KEY:
+        description: GitHub App private key used to push to the default branch.
+        required: false
+      GITLEAKS_LICENSE:
+        description: Only required when the repository belongs to a GitHub Organization.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Changes
+    uses: Fong0975/library-shared-workflows/.github/workflows/_detect-changes.yml@v1
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      projects: ${{ inputs.projects }}
+      ignore-paths: ${{ inputs.ignore-paths }}
+      extra-filters: ${{ format('{{"swagger":{0},"bump":{1}}}', inputs.swagger-paths, inputs.bump-paths) }}
+
+  node:
+    name: ${{ matrix.project.name }}
+    needs: changes
+    if: needs.changes.outputs.node-projects != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.changes.outputs.node-projects) }}
+    uses: Fong0975/library-shared-workflows/.github/workflows/_node.yml@v1
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      project: ${{ toJSON(matrix.project) }}
+
+  go:
+    name: ${{ matrix.project.name }}
+    needs: changes
+    if: needs.changes.outputs.go-projects != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.changes.outputs.go-projects) }}
+    uses: Fong0975/library-shared-workflows/.github/workflows/_go.yml@v1
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      project: ${{ toJSON(matrix.project) }}
+
+  security:
+    name: Security
+    needs: changes
+    if: inputs.enable-security-scan && needs.changes.outputs.any == 'true'
+    uses: Fong0975/library-shared-workflows/.github/workflows/_security.yml@v1
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      semgrep-configs: ${{ inputs.semgrep-configs }}
+    secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  # Runs once every check above has passed or been skipped.
+  swagger:
+    name: Swagger
+    needs: [changes, node, go, security]
+    if: >-
+      !failure() && !cancelled() &&
+      inputs.enable-swagger &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref_name == inputs.default-branch &&
+      fromJSON(needs.changes.outputs.extra).swagger
+    uses: Fong0975/library-shared-workflows/.github/workflows/_swagger.yml@v1
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    with:
+      language: ${{ inputs.swagger-language }}
+      dir: ${{ inputs.swagger-dir }}
+      install: ${{ inputs.swagger-install }}
+      command: ${{ inputs.swagger-command }}
+      output-dir: ${{ inputs.swagger-output-dir }}
+      spec-file: ${{ inputs.swagger-spec-file }}
+      publish: ${{ inputs.swagger-publish }}
+      title: ${{ inputs.swagger-title }}
+      default-branch: ${{ inputs.default-branch }}
+    secrets:
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+
+  # Last stage: runs once every job above has passed or been skipped.
+  bump-version:
+    name: Bump version
+    needs: [changes, node, go, security, swagger]
+    if: >-
+      !failure() && !cancelled() &&
+      inputs.enable-bump-version &&
+      github.event_name == 'push' &&
+      github.ref_name == inputs.default-branch &&
+      fromJSON(needs.changes.outputs.extra).bump
+    uses: Fong0975/library-shared-workflows/.github/workflows/bump-version.yml@v1
+    permissions:
+      contents: read
+    with:
+      bump-level: ${{ inputs.bump-level }}
+      version-file: ${{ inputs.version-file }}
+      npm-dirs: ${{ inputs.npm-dirs }}
+      npm-workspaces: ${{ inputs.npm-workspaces }}
+      node-version-file: ${{ inputs.node-version-file }}
+      default-branch: ${{ inputs.default-branch }}
+    secrets:
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

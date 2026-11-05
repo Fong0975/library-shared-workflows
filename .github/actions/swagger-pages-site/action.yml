@@ -1,0 +1,34 @@
+name: Swagger Pages site
+description: >-
+  Adds a Swagger UI index.html to a directory of generated OpenAPI documents so
+  the directory can be published to GitHub Pages as is.
+
+inputs:
+  site-dir:
+    description: Directory holding the generated documents; index.html is written into it.
+    required: true
+  title:
+    description: Page title.
+    required: true
+  spec-file:
+    description: OpenAPI document Swagger UI loads, relative to site-dir.
+    default: swagger.json
+
+runs:
+  using: composite
+  steps:
+    - name: Write Swagger UI page
+      shell: bash
+      env:
+        SITE_DIR: ${{ inputs.site-dir }}
+        TITLE: ${{ inputs.title }}
+        SPEC_FILE: ${{ inputs.spec-file }}
+      run: |
+        if [ ! -f "${SITE_DIR}/${SPEC_FILE}" ]; then
+          echo "::error::${SPEC_FILE} was not found in the generated documentation"
+          exit 1
+        fi
+        page=$(cat "$GITHUB_ACTION_PATH/index.html")
+        page=${page//__TITLE__/$TITLE}
+        page=${page//__SPEC_FILE__/$SPEC_FILE}
+        printf '%s\n' "$page" > "${SITE_DIR}/index.html"

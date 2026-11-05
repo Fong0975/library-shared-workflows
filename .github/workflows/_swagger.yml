@@ -1,0 +1,204 @@
+name: Swagger
+
+# Regenerates the OpenAPI documentation, then publishes it to GitHub Pages, commits
+# it back to the default branch, or both.
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: Toolchain used to generate the documentation (node | go).
+        type: string
+        required: true
+      dir:
+        description: Directory the install and generate commands run in.
+        type: string
+        default: "."
+      install:
+        description: Optional command run before generating (e.g. "npm ci").
+        type: string
+        default: ""
+      command:
+        description: Command that generates the documentation (e.g. "go run github.com/swaggo/swag/cmd/swag@latest init").
+        type: string
+        required: true
+      output-dir:
+        description: Directory the command writes to, relative to `dir`.
+        type: string
+        default: docs
+      spec-file:
+        description: OpenAPI document Swagger UI loads, relative to `output-dir`.
+        type: string
+        default: swagger.json
+      publish:
+        description: Where the documentation goes (pages | commit | both).
+        type: string
+        default: pages
+      title:
+        description: GitHub Pages title; defaults to "<repository> API Documentation".
+        type: string
+        default: ""
+      default-branch:
+        description: Branch the documentation is committed to.
+        type: string
+        default: main
+    secrets:
+      APP_ID:
+        description: GitHub App client ID; required when `publish` includes commit.
+        required: false
+      APP_PRIVATE_KEY:
+        description: GitHub App private key; required when `publish` includes commit.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: Generate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate inputs
+        env:
+          LANGUAGE: ${{ inputs.language }}
+          PUBLISH: ${{ inputs.publish }}
+          COMMAND: ${{ inputs.command }}
+        run: |
+          if [ -z "$COMMAND" ]; then
+            echo "::error::A swagger generate command is required"
+            exit 1
+          fi
+          case "$LANGUAGE" in node | go) ;; *)
+            echo "::error::Unsupported swagger language \"${LANGUAGE}\" (expected node or go)"
+            exit 1 ;;
+          esac
+          case "$PUBLISH" in pages | commit | both) ;; *)
+            echo "::error::Unsupported swagger publish target \"${PUBLISH}\" (expected pages, commit or both)"
+            exit 1 ;;
+          esac
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Describes the generator as a project so the shared setup actions can be reused.
+      - name: Describe toolchain
+        id: project
+        env:
+          LANGUAGE: ${{ inputs.language }}
+          DIR: ${{ inputs.dir }}
+          INSTALL: ${{ inputs.install }}
+        run: |
+          project=$(jq -n -c --arg lang "$LANGUAGE" --arg dir "$DIR" --arg install "$INSTALL" '
+            def under($file): if $dir == "." then $file else "\($dir)/\($file)" end;
+            { dir: $dir, env: {}, install: $install }
+            + if $lang == "node" then {
+                "node-version-file": under(".nvmrc"),
+                cache: "npm",
+                "cache-dependency-path": under("package-lock.json")
+              } else {
+                "go-version-file": under("go.mod"),
+                "cache-dependency-path": under("go.sum")
+              } end
+          ')
+          echo "json=${project}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node project
+        if: inputs.language == 'node'
+        uses: Fong0975/library-shared-workflows/.github/actions/setup-node-project@v1
+        with:
+          project: ${{ steps.project.outputs.json }}
+
+      - name: Set up Go project
+        if: inputs.language == 'go'
+        uses: Fong0975/library-shared-workflows/.github/actions/setup-go-project@v1
+        with:
+          project: ${{ steps.project.outputs.json }}
+
+      - name: Generate documentation
+        working-directory: ${{ inputs.dir }}
+        env:
+          CMD: ${{ inputs.command }}
+        run: eval "$CMD"
+
+      - name: Upload documentation
+        uses: actions/upload-artifact@v4 # TODO: pin to a commit SHA
+        with:
+          name: swagger-docs
+          path: ${{ inputs.dir }}/${{ inputs.output-dir }}
+          if-no-files-found: error
+
+  pages:
+    name: Deploy to GitHub Pages
+    needs: generate
+    if: inputs.publish == 'pages' || inputs.publish == 'both'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download documentation
+        uses: actions/download-artifact@v4 # TODO: pin to a commit SHA
+        with:
+          name: swagger-docs
+          path: site
+
+      - uses: Fong0975/library-shared-workflows/.github/actions/swagger-pages-site@v1
+        with:
+          site-dir: site
+          title: ${{ inputs.title || format('{0} API Documentation', github.event.repository.name) }}
+          spec-file: ${{ inputs.spec-file }}
+
+      - uses: actions/configure-pages@v5 # TODO: pin to a commit SHA
+
+      - uses: actions/upload-pages-artifact@v3 # TODO: pin to a commit SHA
+        with:
+          path: site
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4 # TODO: pin to a commit SHA
+
+  commit:
+    name: Commit documentation
+    needs: generate
+    if: inputs.publish == 'commit' || inputs.publish == 'both'
+    runs-on: ubuntu-latest
+    env:
+      DOCS_DIR: ${{ inputs.dir }}/${{ inputs.output-dir }}
+      BRANCH: ${{ inputs.default-branch }}
+    steps:
+      - uses: Fong0975/library-shared-workflows/.github/actions/checkout-for-push@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          ref: ${{ inputs.default-branch }}
+
+      # Removing the directory first makes deleted endpoints disappear from the commit.
+      - name: Clear previous documentation
+        run: rm -rf "$DOCS_DIR"
+
+      - name: Download documentation
+        uses: actions/download-artifact@v4 # TODO: pin to a commit SHA
+        with:
+          name: swagger-docs
+          path: ${{ env.DOCS_DIR }}
+
+      # "[skip ci]" keeps this commit from starting the push workflows again.
+      - name: Commit and push
+        run: |
+          git add -A -- "$DOCS_DIR"
+          if git diff --cached --quiet; then
+            echo "Documentation is already up to date"
+            exit 0
+          fi
+          git commit -m "docs: regenerate swagger documentation [skip ci]"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:${BRANCH}"

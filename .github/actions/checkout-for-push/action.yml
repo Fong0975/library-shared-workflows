@@ -1,0 +1,49 @@
+name: Checkout for push
+description: >-
+  Generates a GitHub App installation token and checks out a branch with it, so
+  later steps can push commits through the branch's protection rules.
+
+inputs:
+  app-id:
+    description: GitHub App client ID (the caller's APP_ID secret).
+    required: true
+  app-private-key:
+    description: GitHub App private key (the caller's APP_PRIVATE_KEY secret).
+    required: true
+  ref:
+    description: Branch to check out and later push to.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Verify GitHub App credentials
+      shell: bash
+      env:
+        APP_ID: ${{ inputs.app-id }}
+        APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
+        REF: ${{ inputs.ref }}
+      run: |
+        if [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ]; then
+          echo "::error::The APP_ID and APP_PRIVATE_KEY secrets are required to push to ${REF}; pass them to the workflow (e.g. secrets: inherit)."
+          exit 1
+        fi
+
+    - name: Generate GitHub App token
+      id: app_token
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        client-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.app-private-key }}
+
+    - name: Checkout ${{ inputs.ref }}
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        token: ${{ steps.app_token.outputs.token }}
+        ref: ${{ inputs.ref }}
+
+    - name: Configure git identity
+      shell: bash
+      run: |
+        git config --local user.name "github-actions[bot]"
+        git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
