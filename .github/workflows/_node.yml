@@ -2,6 +2,10 @@ name: Node project
 
 # Runs the quality checks, unit tests and build of one Node project. Each job is
 # skipped when its commands are empty in the project definition.
+#
+# Every job sets `shell: bash` explicitly: only then does GitHub run steps with
+# `-o pipefail` (the implicit default is `bash -e`), so a failing command piped
+# into another one (e.g. `| tee`) still fails the step.
 
 on:
   workflow_call:
@@ -24,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        shell: bash
         working-directory: ${{ fromJSON(inputs.project).dir }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,6 +66,7 @@ jobs:
       pull-requests: write
     defaults:
       run:
+        shell: bash
         working-directory: ${{ fromJSON(inputs.project).dir }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -94,6 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        shell: bash
         working-directory: ${{ fromJSON(inputs.project).dir }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

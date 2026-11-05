@@ -19,6 +19,11 @@ on:
 permissions:
   contents: read
 
+# Explicit bash enables `-o pipefail`; the implicit default shell is `bash -e`.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   semgrep:
     name: SAST (Semgrep)
