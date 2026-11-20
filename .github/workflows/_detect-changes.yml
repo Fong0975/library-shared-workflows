@@ -9,7 +9,8 @@ name: Detect changes
 # - pull_request: projects and extra filters follow the PR's changed paths; a PR
 #   that edits a workflow file selects everything.
 # - push: every project is checked, while extra filters (post-merge stages such
-#   as swagger and the version bump) follow the pushed commits.
+#   as swagger and the version bump) follow the pushed commits, and
+#   `dependency-update` tells whether the push only updated dependencies.
 # - any other event (e.g. workflow_dispatch): everything is selected.
 
 on:
@@ -29,6 +30,12 @@ on:
           exposed as a boolean in the `extra` output.
         type: string
         default: "{}"
+      dependency-paths:
+        description: >-
+          JSON array of dependency manifest globs; a push that changes nothing else
+          counts as a dependency update. "[]" leaves only the Dependabot check.
+        type: string
+        default: "[]"
     # Callers build their matrix from the name lists and look each project up in
     # `projects-by-name`, so matrix values (and thus job names) stay short.
     outputs:
@@ -47,6 +54,11 @@ on:
       extra:
         description: JSON object mapping each extra filter name to true/false.
         value: ${{ jobs.detect.outputs.extra }}
+      dependency-update:
+        description: >-
+          "true" when a push only updates dependencies: every pushed commit was
+          authored by Dependabot, or only `dependency-paths` files changed.
+        value: ${{ jobs.detect.outputs.dependency-update }}
 
 permissions:
   contents: read
@@ -69,6 +81,7 @@ jobs:
       projects-by-name: ${{ steps.select.outputs.projects-by-name }}
       any: ${{ steps.select.outputs.any }}
       extra: ${{ steps.select.outputs.extra }}
+      dependency-update: ${{ steps.select.outputs.dependency-update }}
     steps:
       - name: Normalize projects
         id: normalize
@@ -76,6 +89,7 @@ jobs:
           PROJECTS: ${{ inputs.projects }}
           IGNORE_PATHS: ${{ inputs.ignore-paths }}
           EXTRA_FILTERS: ${{ inputs.extra-filters }}
+          DEPENDENCY_PATHS: ${{ inputs.dependency-paths }}
         run: |
           projects=$(jq -c '
             def under($dir; $file): if $dir == "." then $file else "\($dir)/\($file)" end;
@@ -132,7 +146,10 @@ jobs:
           # paths-filter treats every pattern of a filter as a required match
           # (predicate-quantifier: every), so all include patterns are folded into
           # one brace pattern and the exclusions follow as negated patterns.
-          filters=$(jq -c --argjson ignore "$IGNORE_PATHS" --argjson extra "$EXTRA_FILTERS" '
+          # `non_dependency` matches any file outside the dependency manifests, so
+          # it staying unchanged means the push only touched dependencies.
+          filters=$(jq -c --argjson ignore "$IGNORE_PATHS" --argjson extra "$EXTRA_FILTERS" \
+            --argjson deps "$DEPENDENCY_PATHS" '
             def rules($paths):
               ($paths | map(select(startswith("!") | not))) as $include
               | if ($include | length) == 0 then error("every filter needs at least one include pattern") else . end
@@ -143,6 +160,7 @@ jobs:
             { ci: [".github/workflows/**"], any: rules(["**"]) }
             + (map({ key: "project_\(.name)", value: rules(.paths) }) | from_entries)
             + ($extra | with_entries(.key = "extra_\(.key)" | .value = rules(.value | if type == "string" then [.] else . end)))
+            + (if ($deps | length) > 0 then { non_dependency: rules(["**"] + ($deps | map("!\(.)"))) } else {} end)
           ' <<<"$projects")
 
           {
@@ -173,6 +191,8 @@ jobs:
           EXTRA_FILTERS: ${{ inputs.extra-filters }}
           CHANGES: ${{ steps.filter.outputs.changes || '[]' }}
           EVENT: ${{ github.event_name }}
+          COMMITS: ${{ toJSON(github.event.commits) }}
+          DEPENDENCY_PATHS: ${{ inputs.dependency-paths }}
         run: |
           has_change() {
             jq -e --arg key "$1" 'any(.[]; . == $key)' <<<"$CHANGES" > /dev/null
@@ -209,12 +229,23 @@ jobs:
             with_entries(.key as $name | .value = ($all or any($changes[]; . == "extra_\($name)")))
           ' <<<"$EXTRA_FILTERS")
 
+          dependency_update=false
+          if [ "$EVENT" = "push" ]; then
+            if jq -e 'length > 0 and all(.[]; .author.username == "dependabot[bot]")' <<<"$COMMITS" > /dev/null; then
+              dependency_update=true
+            elif jq -e 'length > 0' <<<"$DEPENDENCY_PATHS" > /dev/null \
+              && has_change any && ! has_change non_dependency; then
+              dependency_update=true
+            fi
+          fi
+
           {
             echo "node-names=${node_names}"
             echo "go-names=${go_names}"
             echo "projects-by-name=${projects_by_name}"
             echo "any=${any}"
             echo "extra=${extra}"
+            echo "dependency-update=${dependency_update}"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -224,4 +255,5 @@ jobs:
             echo "- Node projects: \`${node_names}\`"
             echo "- Go projects: \`${go_names}\`"
             echo "- Extra filters: \`${extra}\`"
+            echo "- Dependency update: \`${dependency_update}\`"
           } >> "$GITHUB_STEP_SUMMARY"

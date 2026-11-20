@@ -78,6 +78,8 @@ jobs:
 | `swagger-paths` | `["**", "!**/*.md", "!.github/**"]` | A push regenerates only when one of these changed |
 | `enable-bump-version` | `true` | Bump the version after a successful push |
 | `bump-level` | `patch` | `patch` or `minor` for the automatic bump |
+| `dependency-bump-level` | `patch` | Level used instead when the push only updates dependencies; `""` disables it |
+| `dependency-paths` | `["**/package.json", "**/package-lock.json", "**/go.mod", "**/go.sum"]` | Dependency manifests checked by `dependency-bump-level` |
 | `version-file` | `""` | Plain-text version file (e.g. `VERSION`); empty uses `package.json` |
 | `npm-dirs` | `["."]` | Directories whose `package.json` receives the version (`[]` for none) |
 | `npm-workspaces` | `[]` | npm workspaces (relative to the first `npm-dirs` entry) that receive the version |
@@ -172,6 +174,13 @@ Reads the version from `version-file` (or the first `npm-dirs` `package.json`), 
 it, writes it to every configured location, then pushes
 `chore: Bump version to vX.Y.Z [skip ci]` (body: the pushed commit titles, or the manual
 notes) and the tag `vX.Y.Z`. `[skip ci]` prevents the commit from triggering CI again.
+
+A push counts as a dependency update, and is bumped by `dependency-bump-level` instead of
+`bump-level`, when every pushed commit was authored by `dependabot[bot]` or when only
+`dependency-paths` files changed (ignoring `ignore-paths`). For example, with
+`bump-level: minor` a feature merge bumps `1.4.0 → 1.5.0` while a Dependabot merge or a
+lockfile-only fix bumps `1.5.0 → 1.5.1`. A `package.json` edit that changes only scripts
+also counts as a dependency update.
 
 For manual bumps, call `bump-version.yml` from a `workflow_dispatch` workflow
 ([template](templates/bump-version.caller.yml)); it also accepts `major`.

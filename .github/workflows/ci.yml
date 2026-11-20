@@ -88,6 +88,16 @@ on:
         description: Part of the version the automatic bump increments (patch | minor).
         type: string
         default: patch
+      dependency-bump-level:
+        description: >-
+          Level used instead of bump-level when the push only updates dependencies
+          (Dependabot commits, or only dependency-paths changed); empty disables it.
+        type: string
+        default: patch
+      dependency-paths:
+        description: JSON array of dependency manifest globs used by dependency-bump-level.
+        type: string
+        default: '["**/package.json", "**/package-lock.json", "**/go.mod", "**/go.sum"]'
       version-file:
         description: Plain-text file holding only the version (e.g. VERSION); empty when package.json is the source.
         type: string
@@ -133,6 +143,7 @@ jobs:
       projects: ${{ inputs.projects }}
       ignore-paths: ${{ inputs.ignore-paths }}
       extra-filters: ${{ format('{{"swagger":{0},"bump":{1}}}', inputs.swagger-paths, inputs.bump-paths) }}
+      dependency-paths: ${{ inputs.dependency-bump-level != '' && inputs.dependency-paths || '[]' }}
 
   # `name` is a plain string on purpose: a job skipped by `if` never expands its
   # matrix, so a `matrix.*` expression in `name` would be shown verbatim. Matrix
@@ -223,7 +234,9 @@ jobs:
     permissions:
       contents: read
     with:
-      bump-level: ${{ inputs.bump-level }}
+      bump-level: >-
+        ${{ inputs.dependency-bump-level != '' && needs.changes.outputs.dependency-update == 'true'
+          && inputs.dependency-bump-level || inputs.bump-level }}
       version-file: ${{ inputs.version-file }}
       npm-dirs: ${{ inputs.npm-dirs }}
       npm-workspaces: ${{ inputs.npm-workspaces }}
