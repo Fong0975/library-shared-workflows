@@ -134,35 +134,38 @@ jobs:
       ignore-paths: ${{ inputs.ignore-paths }}
       extra-filters: ${{ format('{{"swagger":{0},"bump":{1}}}', inputs.swagger-paths, inputs.bump-paths) }}
 
+  # `name` is a plain string on purpose: a job skipped by `if` never expands its
+  # matrix, so a `matrix.*` expression in `name` would be shown verbatim. Matrix
+  # legs get the project name appended, e.g. "Node (app)".
   node:
-    name: ${{ matrix.project.name || 'Node' }}
+    name: Node
     needs: changes
-    if: needs.changes.outputs.node-projects != '[]'
+    if: needs.changes.outputs.node-names != '[]'
     strategy:
       fail-fast: false
       matrix:
-        project: ${{ fromJSON(needs.changes.outputs.node-projects) }}
+        project: ${{ fromJSON(needs.changes.outputs.node-names) }}
     uses: Fong0975/library-shared-workflows/.github/workflows/_node.yml@v1
     permissions:
       contents: read
       pull-requests: write
     with:
-      project: ${{ toJSON(matrix.project) }}
+      project: ${{ toJSON(fromJSON(needs.changes.outputs.projects-by-name)[matrix.project]) }}
 
   go:
-    name: ${{ matrix.project.name || 'Go' }}
+    name: Go
     needs: changes
-    if: needs.changes.outputs.go-projects != '[]'
+    if: needs.changes.outputs.go-names != '[]'
     strategy:
       fail-fast: false
       matrix:
-        project: ${{ fromJSON(needs.changes.outputs.go-projects) }}
+        project: ${{ fromJSON(needs.changes.outputs.go-names) }}
     uses: Fong0975/library-shared-workflows/.github/workflows/_go.yml@v1
     permissions:
       contents: read
       pull-requests: write
     with:
-      project: ${{ toJSON(matrix.project) }}
+      project: ${{ toJSON(fromJSON(needs.changes.outputs.projects-by-name)[matrix.project]) }}
 
   security:
     name: Security

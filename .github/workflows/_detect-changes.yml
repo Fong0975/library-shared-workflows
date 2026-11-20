@@ -29,13 +29,18 @@ on:
           exposed as a boolean in the `extra` output.
         type: string
         default: "{}"
+    # Callers build their matrix from the name lists and look each project up in
+    # `projects-by-name`, so matrix values (and thus job names) stay short.
     outputs:
-      node-projects:
-        description: JSON array of normalized node projects to check.
-        value: ${{ jobs.detect.outputs.node-projects }}
-      go-projects:
-        description: JSON array of normalized go projects to check.
-        value: ${{ jobs.detect.outputs.go-projects }}
+      node-names:
+        description: JSON array with the names of the node projects to check.
+        value: ${{ jobs.detect.outputs.node-names }}
+      go-names:
+        description: JSON array with the names of the go projects to check.
+        value: ${{ jobs.detect.outputs.go-names }}
+      projects-by-name:
+        description: JSON object mapping every project name to its normalized definition.
+        value: ${{ jobs.detect.outputs.projects-by-name }}
       any:
         description: '"true" when any non-ignored file changed.'
         value: ${{ jobs.detect.outputs.any }}
@@ -59,8 +64,9 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      node-projects: ${{ steps.select.outputs.node-projects }}
-      go-projects: ${{ steps.select.outputs.go-projects }}
+      node-names: ${{ steps.select.outputs.node-names }}
+      go-names: ${{ steps.select.outputs.go-names }}
+      projects-by-name: ${{ steps.select.outputs.projects-by-name }}
       any: ${{ steps.select.outputs.any }}
       extra: ${{ steps.select.outputs.extra }}
     steps:
@@ -185,12 +191,17 @@ jobs:
               extra_all=true ;;
           esac
 
-          pick_projects() {
+          pick_names() {
             jq -c --arg lang "$1" --argjson all "$all" --argjson changes "$CHANGES" '
               map(select(.language == $lang
-                and ($all or ("project_\(.name)" as $key | any($changes[]; . == $key)))))
+                and ($all or ("project_\(.name)" as $key | any($changes[]; . == $key))))
+                | .name)
             ' <<<"$PROJECTS"
           }
+
+          node_names=$(pick_names node)
+          go_names=$(pick_names go)
+          projects_by_name=$(jq -c 'map({ key: .name, value: . }) | from_entries' <<<"$PROJECTS")
 
           if [ "$all" = "true" ] || has_change any; then any=true; else any=false; fi
 
@@ -199,8 +210,9 @@ jobs:
           ' <<<"$EXTRA_FILTERS")
 
           {
-            echo "node-projects=$(pick_projects node)"
-            echo "go-projects=$(pick_projects go)"
+            echo "node-names=${node_names}"
+            echo "go-names=${go_names}"
+            echo "projects-by-name=${projects_by_name}"
             echo "any=${any}"
             echo "extra=${extra}"
           } >> "$GITHUB_OUTPUT"
@@ -209,7 +221,7 @@ jobs:
             echo "### Detected changes"
             echo ""
             echo "- Run everything: \`${all}\`"
-            echo "- Node projects: \`$(pick_projects node | jq -c 'map(.name)')\`"
-            echo "- Go projects: \`$(pick_projects go | jq -c 'map(.name)')\`"
+            echo "- Node projects: \`${node_names}\`"
+            echo "- Go projects: \`${go_names}\`"
             echo "- Extra filters: \`${extra}\`"
           } >> "$GITHUB_STEP_SUMMARY"
