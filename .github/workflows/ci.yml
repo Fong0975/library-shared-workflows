@@ -97,7 +97,13 @@ on:
       dependency-paths:
         description: JSON array of dependency manifest globs used by dependency-bump-level.
         type: string
-        default: '["**/package.json", "**/package-lock.json", "**/go.mod", "**/go.sum"]'
+        default: '["**/package.json", "**/package-lock.json", "**/go.mod", "**/go.sum", "**/.nvmrc"]'
+      dependency-dockerfiles:
+        description: >-
+          JSON array of Dockerfile globs that count as dependency files when only
+          the image tags of existing FROM lines changed.
+        type: string
+        default: '["**/Dockerfile", "**/Dockerfile.*", "**/*.Dockerfile"]'
       version-file:
         description: Plain-text file holding only the version (e.g. VERSION); empty when package.json is the source.
         type: string
@@ -144,6 +150,8 @@ jobs:
       ignore-paths: ${{ inputs.ignore-paths }}
       extra-filters: ${{ format('{{"swagger":{0},"bump":{1}}}', inputs.swagger-paths, inputs.bump-paths) }}
       dependency-paths: ${{ inputs.dependency-bump-level != '' && inputs.dependency-paths || '[]' }}
+      dependency-dockerfiles: ${{ inputs.dependency-dockerfiles }}
+      dependency-scope: ${{ inputs.bump-paths }}
 
   # `name` is a plain string on purpose: a job skipped by `if` never expands its
   # matrix, so a `matrix.*` expression in `name` would be shown verbatim. Matrix

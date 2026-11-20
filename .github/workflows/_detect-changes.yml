@@ -36,6 +36,18 @@ on:
           counts as a dependency update. "[]" leaves only the Dependabot check.
         type: string
         default: "[]"
+      dependency-dockerfiles:
+        description: >-
+          JSON array of Dockerfile globs that also count as dependency files when
+          every changed line is a FROM line whose image tag alone changed.
+        type: string
+        default: "[]"
+      dependency-scope:
+        description: >-
+          JSON array of globs (`!` excludes) the dependency check looks at; changes
+          outside it (e.g. docs) neither count as dependency nor as regular changes.
+        type: string
+        default: '["**"]'
     # Callers build their matrix from the name lists and look each project up in
     # `projects-by-name`, so matrix values (and thus job names) stay short.
     outputs:
@@ -57,7 +69,8 @@ on:
       dependency-update:
         description: >-
           "true" when a push only updates dependencies: every pushed commit was
-          authored by Dependabot, or only `dependency-paths` files changed.
+          authored by Dependabot, or only `dependency-paths` files and image tags
+          in `dependency-dockerfiles` changed.
         value: ${{ jobs.detect.outputs.dependency-update }}
 
 permissions:
@@ -90,6 +103,8 @@ jobs:
           IGNORE_PATHS: ${{ inputs.ignore-paths }}
           EXTRA_FILTERS: ${{ inputs.extra-filters }}
           DEPENDENCY_PATHS: ${{ inputs.dependency-paths }}
+          DEPENDENCY_DOCKERFILES: ${{ inputs.dependency-dockerfiles }}
+          DEPENDENCY_SCOPE: ${{ inputs.dependency-scope }}
         run: |
           projects=$(jq -c '
             def under($dir; $file): if $dir == "." then $file else "\($dir)/\($file)" end;
@@ -146,10 +161,13 @@ jobs:
           # paths-filter treats every pattern of a filter as a required match
           # (predicate-quantifier: every), so all include patterns are folded into
           # one brace pattern and the exclusions follow as negated patterns.
-          # `non_dependency` matches any file outside the dependency manifests, so
-          # it staying unchanged means the push only touched dependencies.
+          # `non_dependency` matches any in-scope file outside the dependency
+          # manifests and Dockerfiles, so it staying unchanged means the push only
+          # touched those (plus out-of-scope files such as docs); `dockerfile` lists
+          # the changed Dockerfiles whose diff is checked later.
           filters=$(jq -c --argjson ignore "$IGNORE_PATHS" --argjson extra "$EXTRA_FILTERS" \
-            --argjson deps "$DEPENDENCY_PATHS" '
+            --argjson deps "$DEPENDENCY_PATHS" --argjson dockerfiles "$DEPENDENCY_DOCKERFILES" \
+            --argjson scope "$DEPENDENCY_SCOPE" '
             def rules($paths):
               ($paths | map(select(startswith("!") | not))) as $include
               | if ($include | length) == 0 then error("every filter needs at least one include pattern") else . end
@@ -160,7 +178,8 @@ jobs:
             { ci: [".github/workflows/**"], any: rules(["**"]) }
             + (map({ key: "project_\(.name)", value: rules(.paths) }) | from_entries)
             + ($extra | with_entries(.key = "extra_\(.key)" | .value = rules(.value | if type == "string" then [.] else . end)))
-            + (if ($deps | length) > 0 then { non_dependency: rules(["**"] + ($deps | map("!\(.)"))) } else {} end)
+            + (if ($deps | length) > 0 then { non_dependency: rules($scope + ($deps + $dockerfiles | map("!\(.)"))) } else {} end)
+            + (if ($deps | length) > 0 and ($dockerfiles | length) > 0 then { dockerfile: rules($dockerfiles) } else {} end)
           ' <<<"$projects")
 
           {
@@ -182,6 +201,7 @@ jobs:
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           predicate-quantifier: every
+          list-files: json
           filters: ${{ steps.normalize.outputs.filters }}
 
       - name: Select what to run
@@ -193,6 +213,9 @@ jobs:
           EVENT: ${{ github.event_name }}
           COMMITS: ${{ toJSON(github.event.commits) }}
           DEPENDENCY_PATHS: ${{ inputs.dependency-paths }}
+          DOCKERFILES: ${{ steps.filter.outputs.dockerfile_files || '[]' }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
         run: |
           has_change() {
             jq -e --arg key "$1" 'any(.[]; . == $key)' <<<"$CHANGES" > /dev/null
@@ -229,12 +252,42 @@ jobs:
             with_entries(.key as $name | .value = ($all or any($changes[]; . == "extra_\($name)")))
           ' <<<"$EXTRA_FILTERS")
 
+          # Prints the given Dockerfile lines with every image tag and digest removed,
+          # so two lines compare equal when only the tag differs.
+          strip_image_tags() {
+            sed -E \
+              -e 's/@sha256:[0-9a-f]+//' \
+              -e 's#^([[:space:]]*FROM[[:space:]]+(--platform=[^[:space:]]+[[:space:]]+)?[^[:space:]]*/?[^[:space:]:/]+):[^[:space:]/]+#\1#'
+          }
+
+          only_from_lines() {
+            [ -n "$1" ] && ! grep -qvE '^[[:space:]]*FROM[[:space:]]' <<<"$1"
+          }
+
+          # Succeeds when every change to the Dockerfile is an image tag bump on an
+          # existing FROM line (same image, same stage).
+          dockerfile_tag_only() {
+            local diff removed added
+            diff=$(git diff -U0 "$BEFORE" "$SHA" -- "$1") || return 1
+            removed=$(awk '/^@@/ { hunk = 1; next } hunk && /^-/ { print substr($0, 2) }' <<<"$diff")
+            added=$(awk '/^@@/ { hunk = 1; next } hunk && /^\+/ { print substr($0, 2) }' <<<"$diff")
+            only_from_lines "$removed" && only_from_lines "$added" \
+              && [ "$(strip_image_tags <<<"$removed")" = "$(strip_image_tags <<<"$added")" ]
+          }
+
+          dockerfiles_tag_only() {
+            local file
+            while IFS= read -r file; do
+              dockerfile_tag_only "$file" || return 1
+            done < <(jq -r '.[]' <<<"$DOCKERFILES")
+          }
+
           dependency_update=false
           if [ "$EVENT" = "push" ]; then
             if jq -e 'length > 0 and all(.[]; .author.username == "dependabot[bot]")' <<<"$COMMITS" > /dev/null; then
               dependency_update=true
             elif jq -e 'length > 0' <<<"$DEPENDENCY_PATHS" > /dev/null \
-              && has_change any && ! has_change non_dependency; then
+              && has_change any && ! has_change non_dependency && dockerfiles_tag_only; then
               dependency_update=true
             fi
           fi

@@ -79,7 +79,8 @@ jobs:
 | `enable-bump-version` | `true` | Bump the version after a successful push |
 | `bump-level` | `patch` | `patch` or `minor` for the automatic bump |
 | `dependency-bump-level` | `patch` | Level used instead when the push only updates dependencies; `""` disables it |
-| `dependency-paths` | `["**/package.json", "**/package-lock.json", "**/go.mod", "**/go.sum"]` | Dependency manifests checked by `dependency-bump-level` |
+| `dependency-paths` | `["**/package.json", "**/package-lock.json", "**/go.mod", "**/go.sum", "**/.nvmrc"]` | Dependency manifests checked by `dependency-bump-level` |
+| `dependency-dockerfiles` | `["**/Dockerfile", "**/Dockerfile.*", "**/*.Dockerfile"]` | Dockerfiles that count as dependency files when only `FROM` image tags changed |
 | `version-file` | `""` | Plain-text version file (e.g. `VERSION`); empty uses `package.json` |
 | `npm-dirs` | `["."]` | Directories whose `package.json` receives the version (`[]` for none) |
 | `npm-workspaces` | `[]` | npm workspaces (relative to the first `npm-dirs` entry) that receive the version |
@@ -177,7 +178,13 @@ notes) and the tag `vX.Y.Z`. `[skip ci]` prevents the commit from triggering CI 
 
 A push counts as a dependency update, and is bumped by `dependency-bump-level` instead of
 `bump-level`, when every pushed commit was authored by `dependabot[bot]` or when only
-`dependency-paths` files changed (ignoring `ignore-paths`). For example, with
+`dependency-paths` files changed (ignoring `ignore-paths`). Changes to `dependency-dockerfiles`
+also qualify when every changed line is an existing `FROM` line whose image tag alone changed
+(`FROM golang:1.26.8-alpine AS builder` → `FROM golang:1.26.10-alpine AS builder`); a new
+stage, another base image or any other instruction counts as a regular change. Files excluded
+by `bump-paths` (by default `**/*.md` and `.github/**`) are left out of this check, so a
+dependency update that also edits the README or a workflow is still a dependency update,
+while a push that only changes such files does not bump at all. For example, with
 `bump-level: minor` a feature merge bumps `1.4.0 → 1.5.0` while a Dependabot merge or a
 lockfile-only fix bumps `1.5.0 → 1.5.1`. A `package.json` edit that changes only scripts
 also counts as a dependency update.
