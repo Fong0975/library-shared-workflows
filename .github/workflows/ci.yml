@@ -135,7 +135,7 @@ jobs:
       extra-filters: ${{ format('{{"swagger":{0},"bump":{1}}}', inputs.swagger-paths, inputs.bump-paths) }}
 
   node:
-    name: ${{ matrix.project.name }}
+    name: ${{ matrix.project.name || 'Node' }}
     needs: changes
     if: needs.changes.outputs.node-projects != '[]'
     strategy:
@@ -150,7 +150,7 @@ jobs:
       project: ${{ toJSON(matrix.project) }}
 
   go:
-    name: ${{ matrix.project.name }}
+    name: ${{ matrix.project.name || 'Go' }}
     needs: changes
     if: needs.changes.outputs.go-projects != '[]'
     strategy:
